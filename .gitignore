@@ -1,0 +1,16 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# SQLite database
+weibo_sentiment/sentiment.db
+
+# Model weights and caches
+weibo_sentiment/models/
+
+# Streamlit artifacts
+.streamlit/
+
+# OS metadata
+Thumbs.db
+.DS_Store
