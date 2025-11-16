@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable, List, Sequence, Tuple
-
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
@@ -62,7 +61,13 @@ class SentimentAnalyzer:
         label_groups: List[List[str]] = []
 
         for result in outputs:
-            scores = self._scores_to_probs(result["scores"])
+            # Multi-label输出会按分数降序排列，需要映射回候选标签顺序
+            label_scores = {
+                label: score for label, score in zip(result["labels"], result["scores"])
+            }
+            scores = [
+                label_scores.get(ch_label, 0.0) for ch_label in CHINESE_LABELS
+            ]
             selected_labels = [
                 EMOTIONS[idx] for idx, score in enumerate(scores) if score >= thresh
             ]
@@ -90,13 +95,6 @@ class SentimentAnalyzer:
             LOGGER.warning(self._error)
             self._pipeline = None
         return self._pipeline
-
-    @staticmethod
-    def _scores_to_probs(scores: Sequence[float]) -> List[float]:
-        logits = np.array(scores, dtype=float)
-        exp = np.exp(logits - np.max(logits))
-        softmax = exp / exp.sum()
-        return softmax.tolist()
 
     @staticmethod
     def _predict_keyword(texts: Sequence[str], thresh: float) -> PredictionResult:

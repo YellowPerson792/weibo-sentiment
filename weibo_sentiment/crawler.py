@@ -8,7 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, Set
 
 import requests
 from bs4 import BeautifulSoup
@@ -20,6 +20,7 @@ VISITOR = "https://passport.weibo.com/visitor/visitor"
 CONFIG = "https://m.weibo.cn/api/config"
 STATUS_SHOW = "https://m.weibo.cn/statuses/show"
 COMMENTS_URL = "https://m.weibo.cn/comments/hotflow"
+COMMENTS_SHOW_URL = "https://m.weibo.cn/api/comments/show"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -116,14 +117,40 @@ class WeiboClient:
         return payload["data"]
 
     def iter_comments(self, status_id: str, max_comments: int) -> Iterator[Comment]:
-        params = {"id": status_id, "mid": status_id, "max_id": 0, "max_id_type": 0}
+        """Yield comments up to max_comments using hot and timeline streams."""
+        seen_ids: Set[str] = set()
         collected = 0
-        while collected < max_comments:
+
+        for comment_id, comment in self._iter_hot_comments(status_id, max_comments):
+            if comment_id in seen_ids:
+                continue
+            seen_ids.add(comment_id)
+            yield comment
+            collected += 1
+            if collected >= max_comments:
+                return
+
+        for comment_id, comment in self._iter_paginated_comments(
+            status_id, max_comments, seen_ids
+        ):
+            if comment_id in seen_ids:
+                continue
+            seen_ids.add(comment_id)
+            yield comment
+            collected += 1
+            if collected >= max_comments:
+                return
+
+    def _iter_hot_comments(
+        self, status_id: str, max_comments: int
+    ) -> Iterator[Tuple[str, Comment]]:
+        params = {"id": status_id, "mid": status_id, "max_id": 0, "max_id_type": 0}
+        fetched = 0
+        while fetched < max_comments:
             response = self.session.get(COMMENTS_URL, params=params, timeout=self.timeout)
             response.raise_for_status()
             payload = response.json()
             if payload.get("ok") != 1:
-                LOGGER.debug("Comments API returned non-ok payload: %s", payload)
                 break
 
             data = payload.get("data") or {}
@@ -132,21 +159,56 @@ class WeiboClient:
                 break
 
             for item in comments:
-                if collected >= max_comments:
+                if fetched >= max_comments:
                     break
-                yield Comment(
+                fetched += 1
+                yield str(item.get("id") or item.get("mid")), Comment(
                     user=item.get("user", {}).get("screen_name", "匿名用户"),
                     text=strip_tags(item.get("text", "")),
                     ts=parse_timestamp(item.get("created_at", "")),
                     likes=int(item.get("like_count") or 0),
                 )
-                collected += 1
 
             max_id = data.get("max_id")
             if not max_id:
                 break
             params["max_id"] = max_id
             params["max_id_type"] = data.get("max_id_type", 0)
+
+    def _iter_paginated_comments(
+        self, status_id: str, max_comments: int, seen_ids: Set[str]
+    ) -> Iterator[Tuple[str, Comment]]:
+        page = 1
+        fetched = 0
+        while fetched < max_comments:
+            response = self.session.get(
+                COMMENTS_SHOW_URL,
+                params={"id": status_id, "page": page},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("ok") != 1:
+                break
+            comments = (payload.get("data") or {}).get("data") or []
+            if not comments:
+                break
+
+            for item in comments:
+                comment_id = item.get("id")
+                if comment_id in seen_ids:
+                    continue
+                fetched += 1
+                yield str(comment_id), Comment(
+                    user=item.get("user", {}).get("screen_name", "匿名用户"),
+                    text=strip_tags(item.get("text", "") or item.get("text_raw", "")),
+                    ts=parse_timestamp(item.get("created_at", "")),
+                    likes=int(item.get("like_counts") or item.get("like_count") or 0),
+                )
+                if fetched >= max_comments:
+                    break
+
+            page += 1
 
 
 def strip_tags(text: str) -> str:

@@ -43,7 +43,7 @@ def render_url_tab() -> None:
     topic = col2.text_input("话题（可选）")
     max_comments = col3.slider("抓取评论数量", min_value=10, max_value=2000, value=200, step=10)
 
-    if st.button("开始采集并分析", use_container_width=True, disabled=not url):
+    if st.button("开始采集并分析", width='stretch', disabled=not url):
         try:
             with st.spinner("抓取评论并执行情绪分析..."):
                 post_meta, comments = crawler.fetch_post_with_comments(url, max_comments=max_comments)
@@ -96,7 +96,7 @@ def render_text_tab() -> None:
             columns=sentiment.EMOTIONS,
         )
         st.write("概率分布")
-        st.dataframe(table.style.format("{:.2%}"), use_container_width=True)
+        st.dataframe(table.style.format("{:.2%}"), width='stretch')
         st.write("情绪标签", "、".join(label_list[0]))
 
 
@@ -193,7 +193,7 @@ def render_analysis_summary(
     label_list: Sequence[Sequence[str]],
 ) -> None:
     dataframe = build_result_dataframe(comments, prob_list, label_list)
-    st.dataframe(dataframe, use_container_width=True)
+    st.dataframe(dataframe, width='stretch')
 
 
 def build_result_dataframe(

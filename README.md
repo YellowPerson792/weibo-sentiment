@@ -1,117 +1,99 @@
-# 微博评论情绪分析与可视化系统
+# Weibo Sentiment Explorer
 
-## 项目概述
+一个基于 Streamlit 的微博热帖评论情绪分析平台，支持爬取真实评论、调用中文情绪模型进行六维度多标签推理，并以图表形式呈现结果。
 
-本项目实现了一个端到端的微博热帖评论情绪分析平台。系统围绕以下核心能力构建：
+---
 
-- **自动采集热帖评论**：通过移动端公开接口 + 访客 Cookie 握手流程，支持输入微博 URL 后自动批量抓取评论、点赞数和时间戳等信息。
-- **六情绪多标签判别**：使用 Hugging Face 模型 `IDEA-CCNL/Erlangshen-RoBERTa-330M-NLI` 进行零样本情绪分类，涵盖愤怒、厌恶、恐惧、喜悦、悲伤、惊讶六种情绪。若模型不可用，会回退到中文关键词启发式算法。
-- **可视化与历史查询**：基于 Streamlit 以网页形式展现评论明细、饼图、词云以及历史分析记录，支持 URL 直分析、单条文本分析与文件批量导入。
-- **数据持久化**：使用 SQLite 存储热帖元信息、评论与情绪结果，便于后续复用与复查。
+## ✨ 功能亮点
 
+- **URL 一键分析**：输入微博热帖链接即可自动完成评论抓取、情绪分析和结果展示。
+- **多入口输入**：除 URL 外，还支持单条文本实时分析和文件批量导入（CSV/XLSX/TXT）。
+- **可视化与历史记录**：表格、饼图、词云等视图直观呈现情绪分布，SQLite 保存结果方便回溯。
+- **高质量模型**：接入 Hugging Face 中文零样本模型 `IDEA-CCNL/Erlangshen-RoBERTa-330M-NLI`，并提供关键词回退策略保证离线可用。
 
-## 目录结构
+---
+
+## 🧱 目录结构
 
 ```
 .
-├── README.md                  # 项目说明文档（当前文件）
-├── Requirement.md             # 初始需求文档
+├── README.md
+├── MODULES.md                # 模块详解及改进建议
+├── Requirement.md            # 初始需求
 └── weibo_sentiment
-    ├── app.py                 # Streamlit 入口
-    ├── crawler.py             # 微博爬虫（移动端公开 API + visitor 握手）
-    ├── sentiment.py           # 情绪推理封装（HF 模型 + 启发式兜底）
-    ├── db.py                  # SQLite 持久层
-    ├── utils.py               # 词云/饼图等可视化工具
-    ├── requirements.txt       # 运行所需依赖
-    └── models
-        └── erlangshen-roberta-nli/  # 已下载的 HF 模型权重（可选）
+    ├── app.py                # Streamlit 入口
+    ├── crawler.py            # 微博爬虫
+    ├── sentiment.py          # 情绪推理封装
+    ├── db.py                 # SQLite 持久层
+    ├── utils.py              # 词云/饼图工具
+    ├── requirements.txt
+    └── models/               # 可选：HF 模型缓存目录
 ```
 
+各模块之间的详细关系可参考 `MODULES.md`。
 
-## 快速开始
+---
 
-1. **安装依赖**
+## 🚀 快速开始
 
-   ```bash
-   pip install -r weibo_sentiment/requirements.txt
-   ```
+### 1. 环境准备
 
-2. **准备模型**
+```bash
+git clone https://github.com/YellowPerson792/weibo-sentiment.git
+cd weibo_sentiment
+pip install -r requirements.txt
+```
 
-   - 默认会自动从 Hugging Face 下载 `IDEA-CCNL/Erlangshen-RoBERTa-330M-NLI`。
-   - 若需要离线运行，可先执行：
+> 推荐设置 Hugging Face 镜像以加速模型下载：
+> ```bash
+> set HF_ENDPOINT=https://hf-mirror.com          # Windows CMD
+> export HF_ENDPOINT=https://hf-mirror.com       # macOS / Linux
+> ```
+> 可选：设置 `HF_HOME` 指向 `weibo_sentiment/models` 以便离线缓存。
 
-     ```bash
-     hf-mirror download IDEA-CCNL/Erlangshen-RoBERTa-330M-NLI \
-       --cache-dir weibo_sentiment/models
-     ```
+### 2. 启动服务
 
-   - 运行前建议设置镜像加速路径：
+```bash
+streamlit run weibo_sentiment/app.py
+```
 
-     ```bash
-     set HF_ENDPOINT=https://hf-mirror.com
-     set HF_HOME=%CD%\weibo_sentiment\models   # 依操作系统调整
-     ```
+浏览器访问 `http://127.0.0.1:8501` 即可进入系统。
 
-3. **启动服务**
+---
 
-   ```bash
-   streamlit run weibo_sentiment/app.py
-   ```
+## 🔧 关键技术
 
-   网页默认监听 `http://127.0.0.1:8501`。
+| 模块         | 说明                                                                                           |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| `crawler.py` | 采用 `requests`+`BeautifulSoup`，模拟移动端 visitor 流程，调用 `m.weibo.cn` 接口抓取评论和元信息。 |
+| `sentiment.py` | 调用 Hugging Face zero-shot pipeline，对评论文本打分并输出六情绪标签，支持关键词启发式回退。   |
+| `db.py`      | 维护 `posts`、`comments`、`emotions` 表，提供插入与查询 API，供前端读取历史数据和分布。        |
+| `utils.py`   | 承载饼图、词云等可视化辅助方法，以及中文分词工具。                                             |
+| `app.py`     | 调度上述模块，提供 URL 分析 / 文本分析 / 文件导入 / 历史查询等页面。                            |
 
+---
 
-## 功能特性
+## 📊 使用流程
 
-- **URL 直达分析**：输入微博热帖链接，自动抓取评论 -> 调用情绪模型 -> 保存结果 -> 页面展示。
-- **文本即时分析**：用于演示单条文本情绪预测，可调节标签阈值。
-- **文件批量导入**：支持 CSV / XLSX / TXT 批量处理评论文本。
-- **历史记录**：从 SQLite 查询已分析的帖子，再次展示当时的情绪分布与可视化图表。
-- **数据增强**：
-  - 评论在写库前做 HTML 解析与换行清理。
-  - 词云使用 `jieba` 中文分词，支持停用词过滤的扩展（待实现）。
-  - 饼图基于平均情绪概率计算，避免单条评论噪声。
+1. **网址直分析**  
+   输入微博链接 → 选择抓取评论数 → 点击“开始采集并分析” → 等待分析结果 → 查看表格、情绪饼图、词云。
 
+2. **文本即时分析**  
+   粘贴任意中文评论 → 配置情绪阈值 → 点击“分析文本” → 获取概率与标签。
 
-## 关键技术
+3. **文件批量分析**  
+   上传 CSV/XLSX/TXT（需包含 `text` 字段） → 一键分析 → 查看结果表。
 
-- **爬虫 `crawler.py`**
-  - `WeiboClient` 负责 visitor cookie 的 `genvisitor` 与 `incarnate` 握手。
-  - 调用 `https://m.weibo.cn/statuses/show` 获取帖子信息，并使用 `https://m.weibo.cn/comments/hotflow` 分页抓取评论。
-  - 自动提取用户昵称、评论正文、时间戳、点赞数。
+4. **历史查询**  
+   在下拉框选择之前分析过的热帖 → 回放当时的数据与图表。
 
-- **情绪推理 `sentiment.py`**
-  - 通过 `transformers.pipeline("zero-shot-classification")` 实现多标签分类。
-  - 中文情绪标签与模型输出采用 softmax 归一化，避免阈值敏感。
-  - 提供关键词 fallback，确保离线或加载失败仍可给出结果。
+---
 
-- **持久化 `db.py`**
-  - 三张主要表：`posts`、`comments`、`emotions`。
-  - 支持插入与查询历史记录、评论情绪分布。
+## 🧩 后续扩展
 
-- **前端 `app.py`**
-  - Streamlit 多 Tab 布局，集中展示流程；
-  - 使用 `matplotlib` 与 `wordcloud` 完成图表绘制；
-  - 与数据库交互以支持历史回放。
+- 增设评论分页与筛选、情绪阈值自定义、导出数据等高级功能。
+- 引入代理、异步抓取和更完善的错误提示，提升采集稳定性。
+- 加入 Dockerfile、CI 流水线与更丰富的测试覆盖，便于部署。
 
-
-## 测试与验证
-
-- `python -m compileall weibo_sentiment`：确保所有模块语法正确。
-- `python -c "from weibo_sentiment import sentiment; sentiment.predict(['太棒了！'])"`：验证模型加载。
-- `python weibo_sentiment/app.py` 通过 Streamlit 接口完成端端联调。
-
-
-## 已知问题与后续规划
-
-- **抽样展示**：当前网页未对大规模评论进行分页展示，可增加分页/下载功能。
-- **错误提示**：需在爬虫失败时给出更友好的提示及重试机制。
-- **模型优化**：可引入专门的中文情绪分类模型或微调 pipeline，以提升准确度。
-- **部署**：需要 Docker 化与更完善的日志监控以便生产部署。
-
-
-## 开源协议
-
-本仓库默认采用 MIT License（如需变更请更新许可证文件）。
+如需更详细的模块描述和改进建议，请参阅 `MODULES.md`。欢迎 Issue / PR 交流反馈！ ❤️
 
