@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable, List, Sequence, Tuple
@@ -12,8 +13,12 @@ LOGGER = logging.getLogger(__name__)
 
 EMOTIONS: Tuple[str, ...] = ("anger", "disgust", "fear", "joy", "sadness", "surprise")
 CHINESE_LABELS: Tuple[str, ...] = ("愤怒", "厌恶", "恐惧", "喜悦", "悲伤", "惊讶")
+MAX_SEQ_LEN = 512
 
-MODEL_NAME = "IDEA-CCNL/Erlangshen-RoBERTa-330M-NLI"
+# Prefer the local safetensors snapshot to avoid downloading a .bin checkpoint that
+# would trigger torch.load (blocked on torch<2.6).
+MODEL_PATH = Path(__file__).resolve().parent / "models" / "erlangshen-roberta-nli"
+MODEL_NAME = str(MODEL_PATH)
 
 
 @dataclass
@@ -31,7 +36,15 @@ class SentimentAnalyzer:
         self._error: str | None = None
 
     def predict(self, texts: Sequence[str], thresh: float = 0.5) -> PredictionResult:
-        cleaned = [text.strip() for text in texts if text and text.strip()]
+        # Coerce inputs to strings and drop empty values to avoid attribute errors on non-text types.
+        cleaned: List[str] = []
+        for value in texts:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                cleaned.append(text)
+
         if not cleaned:
             return PredictionResult([], [])
 
@@ -52,6 +65,8 @@ class SentimentAnalyzer:
             candidate_labels=list(CHINESE_LABELS),
             hypothesis_template="这段话表达了{}的情绪。",
             multi_label=True,
+            truncation=True,
+            max_length=MAX_SEQ_LEN,
         )
 
         if not isinstance(outputs, list):  # Single input returns dict
@@ -84,12 +99,25 @@ class SentimentAnalyzer:
 
         try:
             from transformers import pipeline
+            import torch
+
+            # Auto-detect GPU availability
+            device = 0 if torch.cuda.is_available() else -1
+            device_info = f"GPU (CUDA device {device})" if device >= 0 else "CPU"
+            LOGGER.info(f"Loading pipeline on {device_info} (safetensors preferred)...")
+
+            model_kwargs = {"dtype": torch.float32}
 
             self._pipeline = pipeline(
                 "zero-shot-classification",
                 model=self.model_name,
-                device=-1,
+                tokenizer=self.model_name,
+                device=device,
+                use_safetensors=True,
+                local_files_only=True,
+                model_kwargs=model_kwargs,
             )
+            LOGGER.info(f"Pipeline loaded successfully on {device_info}")
         except Exception as exc:  # pragma: no cover - handled via fallback
             self._error = f"Failed to load HF pipeline: {exc}"
             LOGGER.warning(self._error)

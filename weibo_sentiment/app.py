@@ -60,8 +60,6 @@ def render_url_tab() -> None:
         if topic:
             post_meta["topic"] = topic
 
-        st.success(f"共采集 {len(comments)} 条评论，分析完成。")
-
         post_id = db.insert_post(
             {
                 "url": post_meta.get("url") or url,
@@ -74,9 +72,17 @@ def render_url_tab() -> None:
         )
         comment_ids = db.insert_comments(post_id, comments)
 
-        texts = [comment["text"] for comment in comments]
-        prob_list, label_list = sentiment.predict(texts)
-        db.insert_emotions(prob_list, label_list, comment_ids)
+        # Filter out empty texts and corresponding comment_ids to match sentiment.predict() behavior
+        valid_indices = [i for i, comment in enumerate(comments) if comment.get("text", "").strip()]
+        texts = [comments[i]["text"] for i in valid_indices]
+        valid_comment_ids = [comment_ids[i] for i in valid_indices]
+        
+        with st.spinner(f"正在分析 {len(texts)} 条评论的情绪..."):
+            prob_list, label_list = sentiment.predict(texts)
+        if prob_list:  # Only insert if there are valid predictions
+            db.insert_emotions(prob_list, label_list, valid_comment_ids)
+
+        st.success(f"共采集 {len(comments)} 条评论，分析完成！")
 
         render_analysis_results(post_id, comments, prob_list, label_list, post_meta=post_meta)
 
@@ -87,17 +93,20 @@ def render_text_tab() -> None:
     threshold = st.slider("情绪标签阈值", min_value=0.1, max_value=0.9, value=0.5, step=0.05)
 
     if st.button("分析文本", disabled=not text.strip()):
-        prob_list, label_list = sentiment.predict([text], thresh=threshold)
+        with st.spinner("正在分析文本情绪..."):
+            prob_list, label_list = sentiment.predict([text], thresh=threshold)
         if not prob_list:
             st.info("未能分析该文本，请重试。")
             return
         table = pd.DataFrame(
             [prob_list[0]],
-            columns=sentiment.EMOTIONS,
+            columns=sentiment.CHINESE_LABELS,
         )
         st.write("概率分布")
         st.dataframe(table.style.format("{:.2%}"), width='stretch')
-        st.write("情绪标签", "、".join(label_list[0]))
+        emotion_to_chinese = dict(zip(sentiment.EMOTIONS, sentiment.CHINESE_LABELS))
+        emotion_labels_cn = [emotion_to_chinese[label] for label in label_list[0]]
+        st.write("情绪标签", "、".join(emotion_labels_cn))
 
 
 def render_file_tab() -> None:
@@ -111,23 +120,49 @@ def render_file_tab() -> None:
             st.warning("未从文件中解析到有效文本。")
             return
         texts = [row["text"] for row in comments]
-        prob_list, label_list = sentiment.predict(texts, thresh=threshold)
-        render_analysis_summary(comments, prob_list, label_list)
+        with st.spinner(f"正在分析 {len(texts)} 条评论的情绪..."):
+            prob_list, label_list = sentiment.predict(texts, thresh=threshold)
+        render_analysis_results(None, comments, prob_list, label_list)
 
 
 def render_history_tab() -> None:
     st.subheader("历史分析记录")
-    posts = db.get_recent_posts()
+    
+    # Get posts with customizable limit
+    limit = st.slider("显示最近记录数", min_value=5, max_value=50, value=20, step=5, key="history_limit")
+    posts = db.get_recent_posts(limit=limit)
+    
     if not posts:
         st.info("暂无历史记录。")
         return
-    options = {f"{row['title']}（{row['created_at']}）": row["id"] for row in posts}
-    selection = st.selectbox("选择历史帖", options.keys())
+    
+    # Display summary table of all posts
+    st.markdown("#### 所有历史记录")
+    post_summary = []
+    for row in posts:
+        post_summary.append({
+            "ID": row["id"],
+            "标题": row["title"],
+            "评论数": row["comment_cnt"] if row["comment_cnt"] else 0,
+            "话题": row["topic"] if row["topic"] else "",
+            "创建时间": row["created_at"]
+        })
+    summary_df = pd.DataFrame(post_summary)
+    st.dataframe(summary_df, width='stretch', hide_index=True)
+    
+    # Select a specific post to view details
+    st.markdown("#### 查看详细分析")
+    options = {f"{row['title']} - {row['created_at']} ({row['comment_cnt'] if row['comment_cnt'] else 0}条评论)": row["id"] for row in posts}
+    selection = st.selectbox("选择要查看的记录", options.keys(), key="history_select")
+    
+    if not selection:
+        return
+        
     post_id = options[selection]
 
     comments = db.get_comments_with_emotions(post_id)
     if not comments:
-        st.info("历史记录暂无评论分析结果。")
+        st.info("该记录暂无评论分析结果。")
         return
 
     prob_list = [
@@ -160,7 +195,7 @@ def render_history_tab() -> None:
 
 
 def render_analysis_results(
-    post_id: int,
+    post_id: Optional[int],
     comments: Sequence[Dict[str, str]],
     prob_list: Sequence[Sequence[float]],
     label_list: Sequence[Sequence[str]],
@@ -176,7 +211,18 @@ def render_analysis_results(
     st.markdown("#### 评论情绪概览")
     render_analysis_summary(comments, prob_list, label_list)
 
-    dist = db.get_emotion_dist(post_id)
+    # Calculate emotion distribution from prob_list or fetch from database
+    if post_id is not None:
+        dist = db.get_emotion_dist(post_id)
+    else:
+        dist = None
+    
+    if dist is None and prob_list:
+        # Calculate distribution from probabilities for file upload scenario
+        import numpy as np
+        avg_probs = np.mean(prob_list, axis=0)
+        dist = {emotion: float(prob) for emotion, prob in zip(sentiment.EMOTIONS, avg_probs)}
+    
     if dist:
         col1, col2 = st.columns(2)
         with col1:
@@ -201,17 +247,31 @@ def build_result_dataframe(
     prob_list: Sequence[Sequence[float]],
     label_list: Sequence[Sequence[str]],
 ) -> pd.DataFrame:
+    # Map English emotions to Chinese
+    emotion_to_chinese = dict(zip(sentiment.EMOTIONS, sentiment.CHINESE_LABELS))
+    
     probabilities = [
-        {emotion: f"{score:.1%}" for emotion, score in zip(sentiment.EMOTIONS, scores)}
+        {emotion_to_chinese[emotion]: f"{score:.1%}" for emotion, score in zip(sentiment.EMOTIONS, scores)}
         for scores in prob_list
     ]
+    
     records = []
     for idx, comment in enumerate(comments):
+        # Format timestamp - if it's a numeric index, show it; otherwise format datetime
+        ts = comment.get("ts", "")
+        if isinstance(ts, int) or (isinstance(ts, str) and ts.isdigit()):
+            ts_display = f"第{ts}条" if ts else ""
+        else:
+            ts_display = str(ts) if ts else ""
+        
+        # Convert emotion labels to Chinese
+        emotion_labels_cn = [emotion_to_chinese.get(label, label) for label in (label_list[idx] if idx < len(label_list) else [])]
+        
         base = {
             "用户": comment.get("user", "未知用户"),
             "评论内容": comment.get("text", ""),
-            "时间": comment.get("ts", ""),
-            "情绪标签": "、".join(label_list[idx]) if idx < len(label_list) else "",
+            "时间": ts_display,
+            "情绪标签": "、".join(emotion_labels_cn),
             "点赞数": comment.get("likes", 0),
         }
         base.update(probabilities[idx] if idx < len(probabilities) else {})
@@ -229,11 +289,31 @@ def load_comments_from_file(uploaded_file) -> List[Dict[str, str]]:
         lines = [line.decode("utf-8", errors="ignore").strip() for line in uploaded_file.readlines()]
         df = pd.DataFrame({"text": [line for line in lines if line]})
 
+    # Normalize column names: map Chinese names to English
+    column_mapping = {
+        "用户": "user",
+        "评论内容": "text",
+        "评论文本": "text",
+        "内容": "text",
+        "时间": "ts",
+        "点赞数": "likes",
+        "赞数": "likes",
+    }
+    df = df.rename(columns=column_mapping)
+
     if "text" not in df.columns:
         first_column = df.columns[0] if not df.empty else "text"
         df = df.rename(columns={first_column: "text"})
     df = df.dropna(subset=["text"])
-    return [{"user": row.get("user", "批量用户"), "text": row["text"], "ts": row.get("ts", "")} for _, row in df.iterrows()]
+    return [
+        {
+            "user": str(row.get("user") or "批量用户").strip(),
+            "text": str(row["text"]).strip(),
+            "ts": str(row.get("ts") or "").strip(),
+            "likes": int(row.get("likes") or 0),
+        }
+        for _, row in df.iterrows()
+    ]
 
 
 if __name__ == "__main__":
