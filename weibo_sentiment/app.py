@@ -42,6 +42,7 @@ def render_url_tab() -> None:
     title = col1.text_input("标题（可选）")
     topic = col2.text_input("话题（可选）")
     max_comments = col3.slider("抓取评论数量", min_value=10, max_value=2000, value=200, step=10)
+    threshold = st.slider("情绪标签阈值", min_value=0.1, max_value=0.9, value=0.5, step=0.05, key="url_thresh")
 
     if st.button("开始采集并分析", width='stretch', disabled=not url):
         try:
@@ -78,7 +79,7 @@ def render_url_tab() -> None:
         valid_comment_ids = [comment_ids[i] for i in valid_indices]
         
         with st.spinner(f"正在分析 {len(texts)} 条评论的情绪..."):
-            prob_list, label_list = sentiment.predict(texts)
+            prob_list, label_list = sentiment.predict(texts, thresh=threshold)
         if prob_list:  # Only insert if there are valid predictions
             db.insert_emotions(prob_list, label_list, valid_comment_ids)
 
@@ -105,7 +106,15 @@ def render_text_tab() -> None:
         st.write("概率分布")
         st.dataframe(table.style.format("{:.2%}"), width='stretch')
         emotion_to_chinese = dict(zip(sentiment.EMOTIONS, sentiment.CHINESE_LABELS))
-        emotion_labels_cn = [emotion_to_chinese[label] for label in label_list[0]]
+        emotion_emoji = {
+            "anger": "愤怒😠",
+            "disgust": "厌恶🤢",
+            "fear": "恐惧😨",
+            "joy": "喜悦😄",
+            "sadness": "悲伤😢",
+            "surprise": "惊讶😲",
+        }
+        emotion_labels_cn = [emotion_emoji.get(label, emotion_to_chinese[label]) for label in label_list[0]]
         st.write("情绪标签", "、".join(emotion_labels_cn))
 
 
@@ -208,7 +217,7 @@ def render_analysis_results(
             f"**作者**：{post_meta.get('author', '未知')}  \n"
             f"**话题**：{post_meta.get('topic', '')}"
         )
-    st.markdown("#### 评论情绪概览")
+    st.markdown("#### 评论情绪概览（情绪标签按得分由高到低显示）")
     render_analysis_summary(comments, prob_list, label_list)
 
     # Calculate emotion distribution from prob_list or fetch from database
@@ -249,6 +258,14 @@ def build_result_dataframe(
 ) -> pd.DataFrame:
     # Map English emotions to Chinese
     emotion_to_chinese = dict(zip(sentiment.EMOTIONS, sentiment.CHINESE_LABELS))
+    emotion_emoji = {
+        "anger": "愤怒😠",
+        "disgust": "厌恶🤢",
+        "fear": "恐惧😨",
+        "joy": "喜悦😄",
+        "sadness": "悲伤😢",
+        "surprise": "惊讶😲",
+    }
     
     probabilities = [
         {emotion_to_chinese[emotion]: f"{score:.1%}" for emotion, score in zip(sentiment.EMOTIONS, scores)}
@@ -263,10 +280,17 @@ def build_result_dataframe(
             ts_display = f"第{ts}条" if ts else ""
         else:
             ts_display = str(ts) if ts else ""
-        
-        # Convert emotion labels to Chinese
-        emotion_labels_cn = [emotion_to_chinese.get(label, label) for label in (label_list[idx] if idx < len(label_list) else [])]
-        
+
+        # Sort emotion labels by their scores (desc) before display
+        if idx < len(prob_list):
+            score_map = dict(zip(sentiment.EMOTIONS, prob_list[idx]))
+        else:
+            score_map = {}
+        raw_labels = label_list[idx] if idx < len(label_list) else []
+        sorted_labels = sorted(raw_labels, key=lambda lab: score_map.get(lab, 0), reverse=True)
+        sorted_labels = sorted_labels[:3]  # limit to top 3 labels for display
+        emotion_labels_cn = [emotion_emoji.get(label, emotion_to_chinese.get(label, label)) for label in sorted_labels]
+
         base = {
             "用户": comment.get("user", "未知用户"),
             "评论内容": comment.get("text", ""),
